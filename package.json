@@ -1,0 +1,9 @@
+{
+  "name": "fourier-transform",
+  "version": "0.0.1-alpha",
+  "description": "傅里叶变换",
+  "uuid": "3f1afcb8-349b-4553-8be4-2755a1a02b47",
+  "creator": {
+    "version": "3.8.8"
+  }
+}
