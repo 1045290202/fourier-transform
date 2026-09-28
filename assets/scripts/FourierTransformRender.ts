@@ -6,6 +6,7 @@
  */
 import { _decorator, Component, Graphics, Color, Node, UITransform } from "cc";
 import { FTCircleChain, FTDrawCircle, FTDrawPoint } from "db://assets/scripts/FTCircleChain";
+import { FTCircle } from "db://assets/scripts/circle";
 
 const {ccclass, property} = _decorator;
 
@@ -26,6 +27,8 @@ export class FourierTransformRender extends Component {
     yWaveGraphics: Graphics | null = null;
     @property(Graphics)
     xWaveGraphics: Graphics | null = null;
+    @property(Graphics)
+    spectrumGraphics: Graphics | null = null;
     /**
      * y 分量波形描边颜色
      */
@@ -86,6 +89,21 @@ export class FourierTransformRender extends Component {
      */
     @property(FTCircleChain)
     chain: FTCircleChain | null = null;
+    /**
+     * 频谱柱颜色
+     */
+    @property(Color)
+    spectrumColor: Color = new Color(178, 102, 255, 255);
+    /**
+     * 频谱图单位频率对应的水平距离，单位：像素/（弧度/秒）；正频率向右延伸，负频率向左延伸
+     */
+    @property
+    spectrumStep: number = 60;
+    /**
+     * 频谱柱宽度，单位：像素；<=0 时按 spectrumStep 的一半自动取值
+     */
+    @property
+    spectrumBarWidth: number = 20;
     
     private _dtSum: number = 0;
     /**
@@ -107,6 +125,11 @@ export class FourierTransformRender extends Component {
         this._tryUpdateAll();
         // 坐标轴为静态图形，只画一次，不参与每帧清理与重绘
         this._drawAxis();
+    }
+    
+    start() {
+        // 频谱依赖 chain.ftCircles，而 FTCircleChain 的 onLoad（生成圆）可能晚于本组件的 onLoad，故放到 start 画；同样为静态图形只画一次
+        this._drawSpectrum();
     }
     
     onEnable() {
@@ -142,6 +165,13 @@ export class FourierTransformRender extends Component {
      */
     redrawAxis() {
         this._drawAxis();
+    }
+    
+    /**
+     * 重绘频域图；FTCircleChain.initCircles 重新生成圆链后或运行时修改 spectrum* 属性后调用
+     */
+    redrawSpectrum() {
+        this._drawSpectrum();
     }
     
     private _tryUpdateAll() {
@@ -282,6 +312,34 @@ export class FourierTransformRender extends Component {
     }
     
     /**
+     * 画频域图：以 spectrumGraphics 节点原点为频谱原点，横轴为频率（负频率在左、正频率在右），纵轴为幅值（圆半径），每个圆对应一根柱子
+     * @private
+     */
+    private _drawSpectrum() {
+        const graphics: Graphics | null = this.spectrumGraphics;
+        if (!graphics) {
+            return;
+        }
+        graphics.clear();
+        const circles: FTCircle[] | undefined = this.chain?.ftCircles;
+        if (!circles || circles.length === 0 || this.spectrumStep <= 0) {
+            return;
+        }
+        const barWidth: number = this.spectrumBarWidth > 0 ? this.spectrumBarWidth : this.spectrumStep / 2;
+        const halfWidth: number = barWidth / 2;
+        for (const circle of circles) {
+            if (circle.radius <= 0) {
+                continue;
+            }
+            // 柱子以「频率 × spectrumStep」为中心线，从频率轴（y=0）向上绘制到幅值高度
+            const centerX: number = circle.frequency * this.spectrumStep;
+            graphics.rect(centerX - halfWidth, 0, barWidth, circle.radius);
+        }
+        // 填充柱状图；所有矩形攒完后只填充一次，避免拆成多个批次
+        graphics.fill();
+    }
+    
+    /**
      * 画坐标轴：以 axisGraphics 节点原点为交点，横轴与纵轴贯穿节点 UITransform 覆盖的整个可见区域
      * @private
      */
@@ -395,6 +453,10 @@ export class FourierTransformRender extends Component {
             this.xWaveGraphics.lineWidth = 3;
             this.xWaveGraphics.lineJoin = Graphics.LineJoin.BEVEL;
             this.xWaveGraphics.lineCap = Graphics.LineCap.BUTT;
+        }
+        if (this.spectrumGraphics) {
+            // 频谱为填充柱状图，只设填充色；柱间无连接，无需调整线型
+            this.spectrumGraphics.fillColor = this.spectrumColor;
         }
     }
 }

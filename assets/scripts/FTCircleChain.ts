@@ -42,7 +42,7 @@ export interface FTDrawPoint {
 const FIXED_CIRCLES: FTCircleConfig[] = [
     {radius: 100, frequency: 0, phase: 0},
     {radius: 50, frequency: 1, phase: Math.PI / 2},
-    {radius: 25, frequency: -2, phase: Math.PI},
+    {radius: 22.5, frequency: -2, phase: Math.PI},
     {radius: 12.5, frequency: 3, phase: Math.PI / 2},
     {radius: 6.25, frequency: -4, phase: Math.PI},
 ];
