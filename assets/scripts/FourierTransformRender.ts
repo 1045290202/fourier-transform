@@ -23,22 +23,34 @@ export class FourierTransformRender extends Component {
     @property(Graphics)
     pathGraphics: Graphics | null = null;
     @property(Graphics)
-    waveGraphics: Graphics | null = null;
+    yWaveGraphics: Graphics | null = null;
+    @property(Graphics)
+    xWaveGraphics: Graphics | null = null;
     /**
-     * 波形描边颜色
+     * y 分量波形描边颜色
      */
     @property(Color)
-    waveColor: Color = new Color(126, 255, 152, 255);
+    yWaveColor: Color = new Color(126, 255, 152, 255);
     /**
-     * 波形相邻采样点的水平间距，单位：像素；正值波形向 +x 延伸，负值向 -x 延伸
+     * x 分量波形描边颜色
+     */
+    @property(Color)
+    xWaveColor: Color = new Color(255, 200, 87, 255);
+    /**
+     * y 分量波形相邻采样点的水平间距，单位：像素；正值波形向 +x 延伸，负值向 -x 延伸
      */
     @property
-    waveStep: number = 2;
+    yWaveStep: number = 1;
     /**
-     * 波形最多保留的采样点数，超出后丢弃最旧的采样点
+     * x 分量波形相邻采样点的垂直间距，单位：像素；正值波形沿 Y 轴向上延伸，负值向下滚动
      */
     @property
-    maxWavePoints: number = 400;
+    xWaveStep: number = 1;
+    /**
+     * 波形最多保留的采样点数，超出后丢弃最旧的采样点（两条波形共用）
+     */
+    @property
+    maxWavePoints: number = 800;
     /**
      * 坐标轴描边颜色（轴线、刻度、网格共用）
      */
@@ -81,9 +93,13 @@ export class FourierTransformRender extends Component {
      */
     private readonly _pathColor: Color = new Color();
     /**
-     * 波形采样值（圆链末端点的 y），索引 0 为最新采样，向后依次为更早的采样
+     * y 分量波形采样值（圆链末端点的 y），索引 0 为最新采样，向后依次为更早的采样
      */
-    private readonly _waveValues: number[] = [];
+    private readonly _yWaveValues: number[] = [];
+    /**
+     * x 分量波形采样值（圆链末端点的 x），索引 0 为最新采样，向后依次为更早的采样
+     */
+    private readonly _xWaveValues: number[] = [];
     
     onLoad() {
         this._initGraphics();
@@ -115,8 +131,10 @@ export class FourierTransformRender extends Component {
      * 清空波形采样数据，重新生成圆链（FTCircleChain.initCircles）后调用，避免新旧波形混在一起
      */
     resetWave() {
-        this._waveValues.length = 0;
-        this.waveGraphics?.clear();
+        this._yWaveValues.length = 0;
+        this._xWaveValues.length = 0;
+        this.yWaveGraphics?.clear();
+        this.xWaveGraphics?.clear();
     }
     
     /**
@@ -142,7 +160,8 @@ export class FourierTransformRender extends Component {
         this._drawCircles(this.chain.drawCircles);
         this._drawPath(this.chain.drawPoints);
         this._sampleWave(this.chain.drawPoints);
-        this._drawWave();
+        this._drawYWave();
+        this._drawXWave();
     }
     
     /**
@@ -197,7 +216,7 @@ export class FourierTransformRender extends Component {
     }
     
     /**
-     * 采样波形：取圆链末端点（画笔）的 y 作为当前时刻的波形值
+     * 采样波形：取圆链末端点（画笔）的 y / x 作为当前时刻两条波形的采样值
      * @param points
      * @private
      */
@@ -205,32 +224,61 @@ export class FourierTransformRender extends Component {
         if (points.length === 0) {
             return;
         }
+        const lastPoint: FTDrawPoint = points[points.length - 1];
         // 最新采样插到头部，使索引 0 恒为波形起点
-        this._waveValues.unshift(points[points.length - 1].y);
+        this._yWaveValues.unshift(lastPoint.y);
+        this._xWaveValues.unshift(lastPoint.x);
         const maxCount: number = Math.max(0, Math.floor(this.maxWavePoints));
-        if (this._waveValues.length > maxCount) {
-            this._waveValues.length = maxCount;
+        if (this._yWaveValues.length > maxCount) {
+            this._yWaveValues.length = maxCount;
+        }
+        if (this._xWaveValues.length > maxCount) {
+            this._xWaveValues.length = maxCount;
         }
     }
     
     /**
-     * 画波形：以 waveGraphics 节点原点为波形起点，沿 x 轴按 waveStep 依次连接历史采样，形成随时间滚动的曲线
+     * 画 y 分量波形：以 yWaveGraphics 节点原点为波形起点，采样值作 y，沿 x 轴按 yWaveStep 依次连接历史采样，形成随时间水平滚动的曲线
      * @private
      */
-    private _drawWave() {
-        if (!this.waveGraphics) {
+    private _drawYWave() {
+        const graphics: Graphics | null = this.yWaveGraphics;
+        if (!graphics) {
             return;
         }
-        if (this._waveValues.length < 2) {
+        const values: number[] = this._yWaveValues;
+        if (values.length < 2) {
             return;
         }
         // 波形为单色，整条曲线只在末尾描边一次，避免逐段 stroke 产生多余批次
-        this.waveGraphics.strokeColor = this.waveColor;
-        this.waveGraphics.moveTo(0, this._waveValues[0]);
-        for (let i = 1; i < this._waveValues.length; i++) {
-            this.waveGraphics.lineTo(i * this.waveStep, this._waveValues[i]);
+        graphics.strokeColor = this.yWaveColor;
+        graphics.moveTo(0, values[0]);
+        for (let i = 1; i < values.length; i++) {
+            graphics.lineTo(i * this.yWaveStep, values[i]);
         }
-        this.waveGraphics.stroke();
+        graphics.stroke();
+    }
+    
+    /**
+     * 画 x 分量波形：以 xWaveGraphics 节点原点为波形起点，采样值作 x，沿 y 轴按 xWaveStep 依次连接历史采样，形成紧贴 Y 轴随时间垂直滚动的曲线
+     * @private
+     */
+    private _drawXWave() {
+        const graphics: Graphics | null = this.xWaveGraphics;
+        if (!graphics) {
+            return;
+        }
+        const values: number[] = this._xWaveValues;
+        if (values.length < 2) {
+            return;
+        }
+        // 波形为单色，整条曲线只在末尾描边一次，避免逐段 stroke 产生多余批次
+        graphics.strokeColor = this.xWaveColor;
+        graphics.moveTo(values[0], 0);
+        for (let i = 1; i < values.length; i++) {
+            graphics.lineTo(values[i], i * this.xWaveStep);
+        }
+        graphics.stroke();
     }
     
     /**
@@ -315,7 +363,8 @@ export class FourierTransformRender extends Component {
         // axisGraphics 为静态图形，不在此清理，否则每帧重画白耗开销
         this.circlesGraphics?.clear();
         this.pathGraphics?.clear();
-        this.waveGraphics?.clear();
+        this.yWaveGraphics?.clear();
+        this.xWaveGraphics?.clear();
     }
     
     /**
@@ -336,11 +385,16 @@ export class FourierTransformRender extends Component {
             this.pathGraphics.lineWidth = 3;
             // this.pathGraphics.lineCap = Graphics.LineCap.ROUND;
         }
-        if (this.waveGraphics) {
-            this.waveGraphics.lineWidth = 3;
+        if (this.yWaveGraphics) {
+            this.yWaveGraphics.lineWidth = 3;
             // 波形采样点密集，用 BEVEL/BUTT 避免 ROUND 拐角细分导致三角形数量膨胀
-            this.waveGraphics.lineJoin = Graphics.LineJoin.BEVEL;
-            this.waveGraphics.lineCap = Graphics.LineCap.BUTT;
+            this.yWaveGraphics.lineJoin = Graphics.LineJoin.BEVEL;
+            this.yWaveGraphics.lineCap = Graphics.LineCap.BUTT;
+        }
+        if (this.xWaveGraphics) {
+            this.xWaveGraphics.lineWidth = 3;
+            this.xWaveGraphics.lineJoin = Graphics.LineJoin.BEVEL;
+            this.xWaveGraphics.lineCap = Graphics.LineCap.BUTT;
         }
     }
 }
