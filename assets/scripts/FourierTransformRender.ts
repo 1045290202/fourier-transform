@@ -4,7 +4,7 @@
  * @File FourierTransformRender.ts
  * @Description 傅里叶变换渲染：只负责绘制，圆链数据由 FTCircleChain 提供
  */
-import { _decorator, Component, Graphics, Color } from "cc";
+import { _decorator, Component, Graphics, Color, Node, UITransform } from "cc";
 import { FTCircleChain, FTDrawCircle, FTDrawPoint } from "db://assets/scripts/FTCircleChain";
 
 const {ccclass, property} = _decorator;
@@ -17,9 +17,48 @@ const FRAME_INTERVAL: number = 0.016667;
 @ccclass()
 export class FourierTransformRender extends Component {
     @property(Graphics)
+    axisGraphics: Graphics | null = null;
+    @property(Graphics)
     circlesGraphics: Graphics | null = null;
     @property(Graphics)
     pathGraphics: Graphics | null = null;
+    @property(Graphics)
+    waveGraphics: Graphics | null = null;
+    /**
+     * 波形描边颜色
+     */
+    @property(Color)
+    waveColor: Color = new Color(126, 255, 152, 255);
+    /**
+     * 波形相邻采样点的水平间距，单位：像素；正值波形向 +x 延伸，负值向 -x 延伸
+     */
+    @property
+    waveStep: number = 2;
+    /**
+     * 波形最多保留的采样点数，超出后丢弃最旧的采样点
+     */
+    @property
+    maxWavePoints: number = 400;
+    /**
+     * 坐标轴描边颜色（轴线、刻度、网格共用）
+     */
+    @property(Color)
+    axisColor: Color = new Color(255, 255, 255, 80);
+    /**
+     * 刻度间隔，单位：像素；<=0 表示不画刻度；开网格时间隔过小会产生大量线段，建议不低于 20
+     */
+    @property
+    axisTickStep: number = 50;
+    /**
+     * 刻度线半长，单位：像素（axisShowGrid 为 true 时忽略，刻度线会延伸成网格线）
+     */
+    @property
+    axisTickSize: number = 6;
+    /**
+     * 是否把刻度线延伸为贯穿整个可见区域的网格线
+     */
+    @property
+    axisShowGrid: boolean = false;
     /**
      * 路径渐变起始颜色（对应最旧的点，即路径尾部）
      */
@@ -41,16 +80,50 @@ export class FourierTransformRender extends Component {
      * 路径渐变插值复用的临时颜色，避免每段新建 Color 造成 GC 压力
      */
     private readonly _pathColor: Color = new Color();
+    /**
+     * 波形采样值（圆链末端点的 y），索引 0 为最新采样，向后依次为更早的采样
+     */
+    private readonly _waveValues: number[] = [];
     
     onLoad() {
         this._initGraphics();
         this._dtSum = 0;
         this._tryUpdateAll();
+        // 坐标轴为静态图形，只画一次，不参与每帧清理与重绘
+        this._drawAxis();
+    }
+    
+    onEnable() {
+        // 节点尺寸（Widget 全屏对齐、分辨率变化）或锚点变化时可见区域跟着变，需重画坐标轴
+        const axisNode: Node | undefined = this.axisGraphics?.node;
+        axisNode?.on(Node.EventType.SIZE_CHANGED, this._drawAxis, this);
+        axisNode?.on(Node.EventType.ANCHOR_CHANGED, this._drawAxis, this);
+    }
+    
+    onDisable() {
+        const axisNode: Node | undefined = this.axisGraphics?.node;
+        axisNode?.off(Node.EventType.SIZE_CHANGED, this._drawAxis, this);
+        axisNode?.off(Node.EventType.ANCHOR_CHANGED, this._drawAxis, this);
     }
     
     update(dt: number) {
         this._dtSum += dt;
         this._tryUpdateAll();
+    }
+    
+    /**
+     * 清空波形采样数据，重新生成圆链（FTCircleChain.initCircles）后调用，避免新旧波形混在一起
+     */
+    resetWave() {
+        this._waveValues.length = 0;
+        this.waveGraphics?.clear();
+    }
+    
+    /**
+     * 重绘坐标轴；运行时修改 axis* 属性后调用（节点尺寸变化会自动重绘）
+     */
+    redrawAxis() {
+        this._drawAxis();
     }
     
     private _tryUpdateAll() {
@@ -68,6 +141,8 @@ export class FourierTransformRender extends Component {
         }
         this._drawCircles(this.chain.drawCircles);
         this._drawPath(this.chain.drawPoints);
+        this._sampleWave(this.chain.drawPoints);
+        this._drawWave();
     }
     
     /**
@@ -79,7 +154,6 @@ export class FourierTransformRender extends Component {
         if (!this.circlesGraphics) {
             return;
         }
-        this.circlesGraphics.strokeColor = Color.WHITE;
         for (const circle of circles) {
             this._drawCircle(circle);
         }
@@ -123,12 +197,125 @@ export class FourierTransformRender extends Component {
     }
     
     /**
+     * 采样波形：取圆链末端点（画笔）的 y 作为当前时刻的波形值
+     * @param points
+     * @private
+     */
+    private _sampleWave(points: FTDrawPoint[]) {
+        if (points.length === 0) {
+            return;
+        }
+        // 最新采样插到头部，使索引 0 恒为波形起点
+        this._waveValues.unshift(points[points.length - 1].y);
+        const maxCount: number = Math.max(0, Math.floor(this.maxWavePoints));
+        if (this._waveValues.length > maxCount) {
+            this._waveValues.length = maxCount;
+        }
+    }
+    
+    /**
+     * 画波形：以 waveGraphics 节点原点为波形起点，沿 x 轴按 waveStep 依次连接历史采样，形成随时间滚动的曲线
+     * @private
+     */
+    private _drawWave() {
+        if (!this.waveGraphics) {
+            return;
+        }
+        if (this._waveValues.length < 2) {
+            return;
+        }
+        // 波形为单色，整条曲线只在末尾描边一次，避免逐段 stroke 产生多余批次
+        this.waveGraphics.strokeColor = this.waveColor;
+        this.waveGraphics.moveTo(0, this._waveValues[0]);
+        for (let i = 1; i < this._waveValues.length; i++) {
+            this.waveGraphics.lineTo(i * this.waveStep, this._waveValues[i]);
+        }
+        this.waveGraphics.stroke();
+    }
+    
+    /**
+     * 画坐标轴：以 axisGraphics 节点原点为交点，横轴与纵轴贯穿节点 UITransform 覆盖的整个可见区域
+     * @private
+     */
+    private _drawAxis() {
+        const axisGraphics = this.axisGraphics;
+        if (!axisGraphics) {
+            return;
+        }
+        axisGraphics.clear();
+        const uiTransform: UITransform | null = axisGraphics.node.getComponent(UITransform);
+        if (!uiTransform || uiTransform.width <= 0 || uiTransform.height <= 0) {
+            return;
+        }
+        // Graphics 的坐标就是节点局部坐标，故按锚点把尺寸换算成局部坐标系下的可见范围
+        const width: number = uiTransform.width;
+        const height: number = uiTransform.height;
+        const minX: number = -uiTransform.anchorPoint.x * width;
+        const maxX: number = (1 - uiTransform.anchorPoint.x) * width;
+        const minY: number = -uiTransform.anchorPoint.y * height;
+        const maxY: number = (1 - uiTransform.anchorPoint.y) * height;
+        // 轴线、刻度、网格同色，所有路径攒完后只描边一次，避免拆成多个批次
+        axisGraphics.strokeColor = this.axisColor;
+        this._drawAxisTicks(axisGraphics, minX, maxX, minY, maxY);
+        // 横轴（时间轴）与纵轴（幅值轴），两端都顶到可见区域边界
+        axisGraphics.moveTo(minX, 0);
+        axisGraphics.lineTo(maxX, 0);
+        axisGraphics.moveTo(0, minY);
+        axisGraphics.lineTo(0, maxY);
+        axisGraphics.stroke();
+    }
+    
+    /**
+     * 画刻度：沿两根轴从原点向两侧按 axisTickStep 等距铺开直到可见区域边界，axisShowGrid 为 true 时刻度线延伸为网格线
+     * @param axisGraphics
+     * @param minX 可见区域左边界
+     * @param maxX 可见区域右边界
+     * @param minY 可见区域下边界
+     * @param maxY 可见区域上边界
+     * @private
+     */
+    private _drawAxisTicks(axisGraphics: Graphics, minX: number, maxX: number, minY: number, maxY: number) {
+        const step: number = this.axisTickStep;
+        if (step <= 0 || (!this.axisShowGrid && this.axisTickSize <= 0)) {
+            return;
+        }
+        // 竖直线（横轴刻度）与水平线（纵轴刻度）在两种模式下的两个端点
+        const bottom: number = this.axisShowGrid ? minY : -this.axisTickSize;
+        const top: number = this.axisShowGrid ? maxY : this.axisTickSize;
+        const left: number = this.axisShowGrid ? minX : -this.axisTickSize;
+        const right: number = this.axisShowGrid ? maxX : this.axisTickSize;
+        // 用 i * step 而不是逐次累加，避免浮点误差随刻度数量放大；i 从 1 开始，跳过原点处的轴线
+        for (let i = 1; i * step <= maxX; i++) {
+            const x: number = i * step;
+            axisGraphics.moveTo(x, bottom);
+            axisGraphics.lineTo(x, top);
+        }
+        for (let i = 1; -i * step >= minX; i++) {
+            const x: number = -i * step;
+            axisGraphics.moveTo(x, bottom);
+            axisGraphics.lineTo(x, top);
+        }
+        for (let i = 1; i * step <= maxY; i++) {
+            const y: number = i * step;
+            axisGraphics.moveTo(left, y);
+            axisGraphics.lineTo(right, y);
+        }
+        for (let i = 1; -i * step >= minY; i++) {
+            const y: number = -i * step;
+            axisGraphics.moveTo(left, y);
+            axisGraphics.lineTo(right, y);
+        }
+    }
+    
+    /**
      * 在更新前清理
      * @private
      */
     private _clearBeforeUpdate() {
+        // axisGraphics 为静态图形，不在此清理，否则每帧重画白耗开销
         this.circlesGraphics?.clear();
         this.pathGraphics?.clear();
+        this.waveGraphics?.clear();
     }
     
     /**
@@ -136,13 +323,24 @@ export class FourierTransformRender extends Component {
      * @private
      */
     private _initGraphics() {
+        if (this.axisGraphics) {
+            this.axisGraphics.lineWidth = 3;
+            this.axisGraphics.lineCap = Graphics.LineCap.BUTT;
+        }
         if (this.circlesGraphics) {
             this.circlesGraphics.lineWidth = 3;
-            this.circlesGraphics.lineCap = Graphics.LineCap.ROUND;
+            // this.circlesGraphics.lineCap = Graphics.LineCap.ROUND;
+            this.circlesGraphics.strokeColor = new Color(175, 175, 175, 255);
         }
         if (this.pathGraphics) {
             this.pathGraphics.lineWidth = 3;
-            this.pathGraphics.lineCap = Graphics.LineCap.ROUND;
+            // this.pathGraphics.lineCap = Graphics.LineCap.ROUND;
+        }
+        if (this.waveGraphics) {
+            this.waveGraphics.lineWidth = 3;
+            // 波形采样点密集，用 BEVEL/BUTT 避免 ROUND 拐角细分导致三角形数量膨胀
+            this.waveGraphics.lineJoin = Graphics.LineJoin.BEVEL;
+            this.waveGraphics.lineCap = Graphics.LineCap.BUTT;
         }
     }
 }
