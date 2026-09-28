@@ -50,11 +50,6 @@ const FIXED_CIRCLES: FTCircleConfig[] = [
 @ccclass()
 export class FTCircleChain extends Component {
     /**
-     * 圆配置，默认使用固定配置，可在编辑器中修改
-     */
-    @property({type: [Object]})
-    circlesConfig: FTCircleConfig[] = FIXED_CIRCLES.map((item) => ({...item}));
-    /**
      * 是否按半径从大到小排序，使圆呈现由外向内的嵌套效果
      */
     @property
@@ -64,6 +59,11 @@ export class FTCircleChain extends Component {
      */
     @property
     maxPoints: number = 1000;
+    
+    /**
+     * 圆配置
+     */
+    circlesConfig: FTCircleConfig[] = FIXED_CIRCLES.map((item) => ({...item}));
     
     ftCircles: FTCircle[] = [];
     drawCircles: FTDrawCircle[] = [];
